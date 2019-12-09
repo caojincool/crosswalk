@@ -14,10 +14,10 @@ import android.graphics.Rect;
 import android.net.http.SslCertificate;
 import android.os.Build.VERSION;
 import android.os.Build.VERSION_CODES;
+import android.os.Build;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.util.Base64;
-import android.util.Log;
 import android.view.MotionEvent;
 import android.view.SurfaceView;
 import android.view.View;
@@ -25,6 +25,7 @@ import android.view.View.OnTouchListener;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.widget.FrameLayout;
 
@@ -36,23 +37,28 @@ import com.tenta.xwalk.refactor.AndroidProtocolHandler;
 
 import com.tenta.metafs.MetaError;
 
+import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.UserDataHost;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
+import org.chromium.components.embedder_support.view.ContentView;
+import org.chromium.components.embedder_support.view.ContentViewRenderView;
 import org.chromium.components.navigation_interception.InterceptNavigationDelegate;
-import org.chromium.content.browser.ActivityContentVideoViewEmbedder;
-import org.chromium.content.browser.ContentVideoViewEmbedder;
-import org.chromium.content.browser.ContentViewCore;
-import org.chromium.content.browser.ContentViewCoreImpl;
-import org.chromium.content.browser.ContentViewRenderView;
-import org.chromium.content.browser.ContentViewStatics;
-import org.chromium.content_public.browser.ContentBitmapCallback;
+import org.chromium.content_public.browser.ContentViewStatics;
+import org.chromium.content_public.browser.GestureListenerManager;
+//TODO(iotto): Check and use if needed
+//import org.chromium.content.browser.ActivityContentVideoViewEmbedder;
+//import org.chromium.components.embedder_support.media.ActivityContentVideoViewEmbedder;
+import org.chromium.content_public.browser.GestureStateListener;
 import org.chromium.content_public.browser.JavaScriptCallback;
+import org.chromium.content_public.browser.JavascriptInjector;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.NavigationController;
 import org.chromium.content_public.browser.NavigationEntry;
 import org.chromium.content_public.browser.NavigationHistory;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.WebContentsInternals;
 import org.chromium.content_public.browser.navigation_controller.UserAgentOverrideOption;
 import org.chromium.media.MediaPlayerBridge;
 import org.chromium.ui.base.ActivityWindowAndroid;
@@ -63,6 +69,7 @@ import org.json.JSONArray;
 
 import java.io.IOException;
 import java.lang.annotation.Annotation;
+import java.lang.ref.WeakReference;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.Map;
@@ -73,11 +80,19 @@ import java.util.Map;
  */
 class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
     private static String TAG = "XWalkContent";
-    private static Class<? extends Annotation> javascriptInterfaceClass = null;
+    private static Class<? extends Annotation> javascriptInterfaceClass;
 
-    private ContentViewCoreImpl mContentViewCore;
+    // A holder of objects passed from WebContents and should be owned by AwContents that may
+    // have direct or indirect reference back to WebView. They are used internally by
+    // WebContents but all the references can create a new gc root that can keep WebView
+    // instances from being freed when they are detached from view tree, hence lead to
+    // memory leak. To avoid the issue, it is possible to use |WebContents.setInternalHolder|
+    // to move the holder of those internal objects to AwContents. Note that they are still
+    // used by WebContents, and AwContents doesn't have to know what's inside the holder.
+    private WebContentsInternals mWebContentsInternals;
+    private WebContentsInternalsHolder mWebContentsInternalsHolder;
     private Context mViewContext;
-    private XWalkContentView mContentView;
+    private ContentView mContentView;
     private ContentViewRenderView mContentViewRenderView;
     private WindowAndroid mWindow;
     private XWalkDevToolsServer mDevToolsServer;
@@ -87,19 +102,23 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
     private XWalkWebContentsDelegateAdapter mXWalkContentsDelegateAdapter;
     private XWalkSettings mSettings;
     private XWalkGeolocationPermissions mGeolocationPermissions;
-    private XWalkLaunchScreenManager mLaunchScreenManager;
+//    private XWalkLaunchScreenManager mLaunchScreenManager;
     private NavigationController mNavigationController;
     private WebContents mWebContents;
-    private boolean mIsLoaded = false;
-    private boolean mAnimated = false;
+    private boolean mIsLoaded;
+    private boolean mAnimated;
     private XWalkAutofillClientAndroid mXWalkAutofillClient;
     private XWalkGetBitmapCallback mXWalkGetBitmapCallback;
-    private ContentBitmapCallback mGetBitmapCallback;
     private final HitTestData mPossiblyStaleHitTestData = new HitTestData();
     // Controls overscroll pull-to-refresh behavior.
-    private SwipeRefreshHandler mSwipeRefreshHandler;
-    private int metaFsError = 0;
+//    private SwipeRefreshHandler mSwipeRefreshHandler;
+    private int metaFsError;
     long mNativeContent;
+    private final int mAppTargetSdkVersion;
+    private JavascriptInjector mJavascriptInjector;
+    
+    // TODO(iotto): Continue!
+    private final UserDataHost mUserDataHost = new UserDataHost();
     
     // ch64
     // These come from the compositor and are updated synchronously (in contrast to the values in
@@ -160,6 +179,7 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
         this.zoneId = zoneId;
         this.tabId = tabId;
 
+        mAppTargetSdkVersion = context.getApplicationInfo().targetSdkVersion;
         // Initialize the WebContensDelegate.
         mXWalkView = xwView;
         mViewContext = mXWalkView.getContext();
@@ -179,7 +199,8 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
         SharedPreferences sharedPreferences = new InMemorySharedPreferences();
         mGeolocationPermissions = new XWalkGeolocationPermissions(sharedPreferences);
 
-        MediaPlayerBridge.setResourceLoadingFilter(new XWalkMediaPlayerResourceLoadingFilter());
+        //TODO(iotto) : Fix if filter is needed
+//        MediaPlayerBridge.setResourceLoadingFilter(new XWalkMediaPlayerResourceLoadingFilter());
 
         setNativeContent(nativeInit());
 
@@ -187,51 +208,58 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
         initCaptureBitmapAsync();
     }
 
+    public UserDataHost getUserDataHost() {
+        return mUserDataHost;
+    }
+    
     private void initCaptureBitmapAsync() {
-        mGetBitmapCallback = new ContentBitmapCallback() {
-            @Override
-            public void onFinishGetBitmap(Bitmap bitmap, int response) {
-                if (mXWalkGetBitmapCallback == null)
-                    return;
-                mXWalkGetBitmapCallback.onFinishGetBitmap(bitmap, response);
-            }
-        };
+        Log.wtf("iotto", "TODO(iotto): implement");
+//        mGetBitmapCallback = new ContentBitmapCallback() {
+//            @Override
+//            public void onFinishGetBitmap(Bitmap bitmap, int response) {
+//                if (mXWalkGetBitmapCallback == null)
+//                    return;
+//                mXWalkGetBitmapCallback.onFinishGetBitmap(bitmap, response);
+//            }
+//        };
     }
 
     public void captureBitmapAsync(XWalkGetBitmapCallback callback) {
         if (mNativeContent == 0)
             return;
-        mXWalkGetBitmapCallback = callback;
-        mWebContents.getContentBitmapAsync(0, 0, mGetBitmapCallback);
-        // mWebContents.getContentBitmapAsync(Bitmap.Config.ARGB_8888, 1.0f, new Rect(),
-        // mGetBitmapCallback);
+        Log.wtf("iotto", "TODO(iotto): implement");
+//        mXWalkGetBitmapCallback = callback;
+//        mWebContents.getContentBitmapAsync(0, 0, mGetBitmapCallback);
+//        // mWebContents.getContentBitmapAsync(Bitmap.Config.ARGB_8888, 1.0f, new Rect(),
+//        // mGetBitmapCallback);
     }
 
     public void captureBitmapWithParams(Bitmap.Config config, float scale, Rect srcRect,
             XWalkGetBitmapCallback callback) {
         if (mNativeContent == 0)
             return;
-        mXWalkGetBitmapCallback = callback;
-        mWebContents.getContentBitmapAsync(0, 0, mGetBitmapCallback);
-        // mWebContents.getContentBitmapAsync(config, scale, srcRect,
-        // mGetBitmapCallback);
+        Log.wtf("iotto", "TODO(iotto): implement");
+//        mXWalkGetBitmapCallback = callback;
+//        mWebContents.getContentBitmapAsync(0, 0, mGetBitmapCallback);
+//        // mWebContents.getContentBitmapAsync(config, scale, srcRect,
+//        // mGetBitmapCallback);
     }
 
     private void setNativeContent(long newNativeContent) {
         if (mNativeContent != 0) {
             destroy();
-            mContentViewCore = null;
         }
 
-        assert mNativeContent == 0 && mXWalkCleanupReference == null && mContentViewCore == null;
+        assert mNativeContent == 0 && mXWalkCleanupReference == null;
 
+        
         mContentViewRenderView = new ContentViewRenderView(mViewContext);
         mContentViewRenderView.onNativeLibraryLoaded(mWindow);
         
         mWindow.setAnimationPlaceholderView(mContentViewRenderView.getSurfaceView());
         
-        mLaunchScreenManager = new XWalkLaunchScreenManager(mViewContext, mXWalkView);
-        mContentViewRenderView.registerFirstRenderedFrameListener(mLaunchScreenManager);
+//        mLaunchScreenManager = new XWalkLaunchScreenManager(mViewContext, mXWalkView);
+//        mContentViewRenderView.registerFirstRenderedFrameListener(mLaunchScreenManager);
         mXWalkView.addView(mContentViewRenderView,
                 new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
                         FrameLayout.LayoutParams.MATCH_PARENT));
@@ -246,18 +274,30 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
 
         mWebContents = nativeGetWebContents(mNativeContent);
 
-        // Initialize ContentView.
-        mContentViewCore = (ContentViewCoreImpl) ContentViewCore.create(mViewContext, getChromeVersion());
-                //new ContentViewCore(mViewContext, "Crosswalk");
-        mContentView = XWalkContentView.createContentView(mViewContext, mContentViewCore,
-                mXWalkView);
-        // TODO(iotto) create propper delegate
-        mContentViewCore.initialize(ViewAndroidDelegate.createBasicDelegate(mContentView),
-                mContentView, mWebContents, mWindow);
-
-        mContentViewCore.setActionModeCallback(
-                new XWalkActionModeCallback(mViewContext, this,
-                        mContentViewCore.getActionModeCallbackHelper()));
+        // Chromium 77
+        mContentView = ContentView.createContentView(mViewContext, mWebContents);
+        
+        mWebContentsInternalsHolder = new WebContentsInternalsHolder(this);
+        mWebContents.initialize(getChromeVersion(),
+                ViewAndroidDelegate.createBasicDelegate(mContentView), mContentView, mWindow,
+                mWebContentsInternalsHolder);        
+        
+        
+        
+        Log.e("iotto", "Check and fix (especially XWalkActionModeCallback)");
+        // TODO(iotto): 
+//        // Initialize ContentView.
+//        mContentViewCore = (ContentViewCoreImpl) ContentViewCore.create(mViewContext, getChromeVersion());
+//                //new ContentViewCore(mViewContext, "Crosswalk");
+//        mContentView = XWalkContentView.createContentView(mViewContext, mWebContents,
+//                mXWalkView);
+//        // TODO(iotto) create propper delegate
+//        mContentViewCore.initialize(ViewAndroidDelegate.createBasicDelegate(mContentView),
+//                mContentView, mWebContents, mWindow);
+//
+//        mContentViewCore.setActionModeCallback(
+//                new XWalkActionModeCallback(mViewContext, this,
+//                        mContentViewCore.getActionModeCallbackHelper()));
         // TODO(iotto) : implement
 //        if (mAutofillProvider != null) {
 //            contentViewCore.setNonSelectionActionModeCallback(
@@ -265,22 +305,27 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
 //        }
         
         // iotto: returnes nativeGetWebContentsAndroid
-        mWebContents = mContentViewCore.getWebContents();
+//        mWebContents = mContentViewCore.getWebContents();
+        
         mNavigationController = mWebContents.getNavigationController();
         mXWalkView.addView(mContentView,
                 new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
                         FrameLayout.LayoutParams.MATCH_PARENT));
         mContentView.requestFocus();
         
-//        mContentViewCore.setContentViewClient(mContentsClientBridge);
-        mContentViewRenderView.setCurrentContentViewCore(mContentViewCore);
-        mContentViewCore.onShow();
+        mContentViewRenderView.setCurrentWebContents(mWebContents);
+////        mContentViewCore.setContentViewClient(mContentsClientBridge);
+//        mContentViewRenderView.setCurrentContentViewCore(mContentViewCore);
+//        mContentViewCore.onShow();
         
         // For addJavascriptInterface
         mContentsClientBridge.installWebContentsObserver(mWebContents);
-        // For swipe-to-refresh
-        mSwipeRefreshHandler = new SwipeRefreshHandler(mViewContext);
-        mSwipeRefreshHandler.setContentViewCore(mContentViewCore);
+        
+        Log.e("iotto", "Fix swipe refresh handler");
+        // TODO(iotto): Fix swipe refresh handler
+//        // For swipe-to-refresh
+//        mSwipeRefreshHandler = new SwipeRefreshHandler(mViewContext);
+//        mSwipeRefreshHandler.setContentViewCore(mContentViewCore);
 
         // Set the third argument isAccessFromFileURLsGrantedByDefault to false,
         // so that
@@ -296,9 +341,7 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
         mSettings.setAllowFileAccessFromFileURLs(true);
 
         // Set DIP scale.
-        WindowAndroid windowAndroid = mContentViewCore.getWindowAndroid();
-
-        mDIPScale = windowAndroid.getDisplay().getDipScale();
+        mDIPScale = mWindow.getDisplay().getDipScale();
         // DeviceDisplayInfo.create(mViewContext).getDIPScale();
 
         mContentsClientBridge.setDIPScale(mDIPScale);
@@ -314,8 +357,10 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
             @Override
             public void onGestureZoomSupportChanged(boolean supportsDoubleTapZoom,
                     boolean supportsMultiTouchZoom) {
-                mContentViewCore.updateDoubleTapSupport(supportsDoubleTapZoom);
-                mContentViewCore.updateMultiTouchZoomSupport(supportsMultiTouchZoom);
+                GestureListenerManager gestureManager =
+                        GestureListenerManager.fromWebContents(mWebContents);
+                gestureManager.updateDoubleTapSupport(supportsDoubleTapZoom);
+                gestureManager.updateMultiTouchZoomSupport(supportsMultiTouchZoom);
             }
         };
         mSettings.setZoomListener(zoomListener);
@@ -325,37 +370,36 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
                 mContentsClientBridge.getInterceptNavigationDelegate());
     }
 
+    // TODO(iotto): Fix popup support!
     public void supplyContentsForPopup(XWalkContent newContents) {
-        if (mNativeContent == 0)
-            return;
-
-        long popupNativeXWalkContent = nativeReleasePopupXWalkContent(mNativeContent);
-        if (popupNativeXWalkContent == 0) {
-            Log.w(TAG, "Popup XWalkView bind failed: no pending content.");
-            if (newContents != null)
-                newContents.destroy();
-            return;
-        }
-        if (newContents == null) {
-            nativeDestroy(popupNativeXWalkContent);
-            return;
-        }
-
-        newContents.receivePopupContents(popupNativeXWalkContent);
-    }
-
-    private void receivePopupContents(long popupNativeXWalkContents) {
-        setNativeContent(popupNativeXWalkContents);
-
-        mContentViewCore.onShow();
+        Log.e("iotto", "Fix: supplyContentsForPopup");
+//        if (mNativeContent == 0)
+//            return;
+//
+//        long popupNativeXWalkContent = nativeReleasePopupXWalkContent(mNativeContent);
+//        if (popupNativeXWalkContent == 0) {
+//            Log.w(TAG, "Popup XWalkView bind failed: no pending content.");
+//            if (newContents != null)
+//                newContents.destroy();
+//            return;
+//        }
+//        if (newContents == null) {
+//            nativeDestroy(popupNativeXWalkContent);
+//            return;
+//        }
+//
+//        newContents.receivePopupContents(popupNativeXWalkContent);
+//    }
+//
+//    private void receivePopupContents(long popupNativeXWalkContents) {
+//        setNativeContent(popupNativeXWalkContents);
+//
+//        mContentViewCore.onShow();
     }
 
     private void doLoadUrl(LoadUrlParams params) {
         params.setOverrideUserAgent(UserAgentOverrideOption.TRUE);
         mNavigationController.loadUrl(params);
-        mContentViewCore.getContainerView().clearFocus();
-        mContentViewCore.getContainerView().requestFocus();
-//        mContentView.requestFocus();
         mIsLoaded = true;
     }
 
@@ -486,16 +530,28 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
     public void addJavascriptInterface(Object object, String name) {
         if (mNativeContent == 0)
             return;
-        mWebContents.addPossiblyUnsafeJavascriptInterface(object, name,
-                javascriptInterfaceClass);
+        
+        Class<? extends Annotation> requiredAnnotation = javascriptInterfaceClass;
+        if (mAppTargetSdkVersion >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            requiredAnnotation = JavascriptInterface.class;
+        }
+
+        getJavascriptInjector().addPossiblyUnsafeInterface(object, name, requiredAnnotation);
     }
 
-    public void removeJavascriptInterface(String name) {
+    public void removeJavascriptInterface(String interfaceName) {
         if (mNativeContent == 0)
             return;
-        mWebContents.removeJavascriptInterface(name);
+        getJavascriptInjector().removeInterface(interfaceName);
     }
 
+    private JavascriptInjector getJavascriptInjector() {
+        if (mJavascriptInjector == null) {
+            mJavascriptInjector = JavascriptInjector.fromWebContents(mWebContents);
+        }
+        return mJavascriptInjector;
+    }
+    
     public void evaluateJavascript(String script, ValueCallback<String> callback) {
         if (mNativeContent == 0)
             return;
@@ -509,7 +565,7 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
                 }
             };
         }
-        mContentViewCore.getWebContents().evaluateJavaScript(script, coreCallback);
+        mWebContents.evaluateJavaScript(script, coreCallback);
     }
 
     public void setUIClient(XWalkUIClient client) {
@@ -537,8 +593,20 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
     }
 
     public int getContentHeight() {
-        return (int) Math.ceil(mContentViewCore.getViewportHeightPix());
-//        return (int) Math.ceil(mContentViewCore.getContentHeightCss());
+        return mWebContents.getHeight();
+        // TODO(iotto): "analyse and implement GetVisibleViewportSize
+//        gfx::Size GuestViewBase::GetDefaultSize() const {
+//            if (!is_full_page_plugin())
+//              return gfx::Size(kDefaultWidth, kDefaultHeight);
+//
+//            // Full page plugins default to the size of the owner's viewport.
+//            return owner_web_contents()
+//                ->GetRenderWidgetHostView()
+//                ->GetVisibleViewportSize();
+//          }
+//        
+//        return (int) Math.ceil(mContentViewCore.getViewportHeightPix());
+////        return (int) Math.ceil(mContentViewCore.getContentHeightCss());
     }
 
     public void setXWalkClient(XWalkClient client) {
@@ -568,13 +636,13 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
     public void onPause() {
         if (mNativeContent == 0)
             return;
-        mContentViewCore.onHide();
+        mWebContents.onHide();
     }
 
     public void onResume() {
         if (mNativeContent == 0)
             return;
-        mContentViewCore.onShow();
+        mWebContents.onShow();
     }
 
     public boolean onNewIntent(Intent intent) {
@@ -655,7 +723,7 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
     // a global setting. And multiple pause will fail the
     // DCHECK in content (content_view_statics.cc:57).
     // Here uses a static boolean to avoid this issue.
-    private static boolean timerPaused = false;
+    private static boolean timerPaused;
 
     // TODO(Guangzhen): ContentViewStatics will be removed in upstream,
     // details in content_view_statics.cc.
@@ -719,15 +787,14 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
             });
             return;
         }
+        Log.e("iotto", "Check if we need some sort of opaque handling");
         if (isOpaque(color)) {
             setOverlayVideoMode(false);
-            mContentViewCore.setBackgroundOpaque(true);
+//            mContentViewCore.setBackgroundOpaque(true);
         } else {
             setOverlayVideoMode(true);
-            mContentViewCore.setBackgroundOpaque(false);
+//            mContentViewCore.setBackgroundOpaque(false);
         }
-        // TODO(iotto) follow into
-        // mContentViewCore.setBackgroundColor(color);
         mContentViewRenderView.setSurfaceViewBackgroundColor(color);
         nativeSetBackgroundColor(mNativeContent, color);
     }
@@ -739,15 +806,10 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
     }
 
     // For instrumentation test.
-    public ContentViewCore getContentViewCoreForTest() {
-        return mContentViewCore;
-    }
-
-    // For instrumentation test.
     public void installWebContentsObserverForTest(XWalkContentsClient contentClient) {
         if (mNativeContent == 0)
             return;
-        contentClient.installWebContentsObserver(mContentViewCore.getWebContents());
+        contentClient.installWebContentsObserver(mWebContents);
     }
 
     public String devToolsAgentId() {
@@ -1020,11 +1082,12 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
     @CalledByNative
     public void onGetUrlAndLaunchScreenFromManifest(String url, String readyWhen,
             String imageBorder) {
-        if (url == null || url.isEmpty())
-            return;
-        mLaunchScreenManager.displayLaunchScreen(readyWhen, imageBorder);
-        mContentsClientBridge.registerPageLoadListener(mLaunchScreenManager);
-        loadUrl(url);
+        Log.e("iotto", "Fix or remove displayLaunchScreen ... we're not using launchscreen!");
+//        if (url == null || url.isEmpty())
+//            return;
+//        mLaunchScreenManager.displayLaunchScreen(readyWhen, imageBorder);
+//        mContentsClientBridge.registerPageLoadListener(mLaunchScreenManager);
+//        loadUrl(url);
     }
 
     @CalledByNative
@@ -1053,27 +1116,30 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
      * Reset swipe-to-refresh handler.
      */
     void resetSwipeRefreshHandler() {
-        // When the dialog is visible, keeping the refresh animation active
-        // in the background is distracting and unnecessary (and likely to
-        // jank when the dialog is shown).
-        if (mSwipeRefreshHandler != null) {
-            mSwipeRefreshHandler.reset();
-        }
+        Log.e("iotto", "resetSwipeRefreshHandler should be implemented in Android");
+//        // When the dialog is visible, keeping the refresh animation active
+//        // in the background is distracting and unnecessary (and likely to
+//        // jank when the dialog is shown).
+//        if (mSwipeRefreshHandler != null) {
+//            mSwipeRefreshHandler.reset();
+//        }
     }
 
     /**
      * Stop swipe-to-refresh animation.
      */
     void stopSwipeRefreshHandler() {
-        if (mSwipeRefreshHandler != null) {
-            mSwipeRefreshHandler.didStopRefreshing();
-        }
+        Log.e("iotto", "resetSwipeRefreshHandler should be implemented in Android");
+//        if (mSwipeRefreshHandler != null) {
+//            mSwipeRefreshHandler.didStopRefreshing();
+//        }
     }
 
     void enableSwipeRefresh(boolean enable) {
-        if (mSwipeRefreshHandler != null) {
-            mSwipeRefreshHandler.setEnabled(enable);
-        }
+        Log.e("iotto", "resetSwipeRefreshHandler should be implemented in Android");
+//        if (mSwipeRefreshHandler != null) {
+//            mSwipeRefreshHandler.setEnabled(enable);
+//        }
     }
 
     public void destroy() {
@@ -1086,18 +1152,18 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
         // Remove its children used for page rendering from view hierarchy.
         mXWalkView.removeView(mContentView);
         mXWalkView.removeView(mContentViewRenderView);
-        mContentViewRenderView.setCurrentContentViewCore(null);
+        mContentViewRenderView.setCurrentWebContents(null);
 
-        if (mSwipeRefreshHandler != null) {
-            mSwipeRefreshHandler.setContentViewCore(null);
-            mSwipeRefreshHandler = null;
-        }
+        Log.e("iotto", "resetSwipeRefreshHandler should be implemented in Android");
+//        if (mSwipeRefreshHandler != null) {
+//            mSwipeRefreshHandler.setContentViewCore(null);
+//            mSwipeRefreshHandler = null;
+//        }
 
         // Destroy the native resources.
         mXWalkCleanupReference.cleanupNow();
         mContentViewRenderView.destroy();
-        mContentViewCore.destroy();
-
+        mWebContents.destroy();
         mXWalkCleanupReference = null;
         mNativeContent = 0;
     }
@@ -1107,7 +1173,7 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
     }
 
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
-        return mContentView.onCreateInputConnectionSuper(outAttrs);
+        return mContentView.onCreateInputConnection(outAttrs);
     }
 
     public boolean onTouchEvent(MotionEvent event) {
@@ -1137,35 +1203,40 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
 
     public int computeHorizontalScrollRange() {
         if (mContentView != null) {
-            return mContentView.computeHorizontalScrollRangeDelegate();
+            Log.e("iotto", "Implement computeHorizontalScrollRange");
+//                    return mAwViewMethods.computeHorizontalScrollRange();
         }
         return 0;
     }
 
     public int computeHorizontalScrollOffset() {
         if (mContentView != null) {
-            return mContentView.computeHorizontalScrollOffsetDelegate();
+            Log.e("iotto", "Implement computeHorizontalScrollOffset");
+//            return mContentView.computeHorizontalScrollOffsetDelegate();
         }
         return 0;
     }
 
     public int computeVerticalScrollRange() {
         if (mContentView != null) {
-            return mContentView.computeVerticalScrollRangeDelegate();
+            Log.e("iotto", "Implement computeVerticalScrollRange");
+//            return mAwViewMethods.computeVerticalScrollRange();
         }
         return 0;
     }
 
     public int computeVerticalScrollOffset() {
         if (mContentView != null) {
-            return mContentView.computeVerticalScrollOffsetDelegate();
+            Log.e("iotto", "Implement computeVerticalScrollOffset");
+//            return mContentView.computeVerticalScrollOffsetDelegate();
         }
         return 0;
     }
 
     public int computeVerticalScrollExtent() {
         if (mContentView != null) {
-            return mContentView.computeVerticalScrollExtentDelegate();
+            Log.e("iotto", "Implement computeVerticalScrollExtent");
+//            return mContentView.computeVerticalScrollExtentDelegate();
         }
         return 0;
     }
@@ -1421,7 +1492,7 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
     @CalledByNative
     private void setXWalkAutofillClient(XWalkAutofillClientAndroid client) {
         mXWalkAutofillClient = client;
-        client.init(mContentViewCore);
+        client.init(mViewContext);
     }
 
     public void clearSslPreferences() {
@@ -1517,26 +1588,27 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
         }
     }
     
-    public ContentVideoViewEmbedder getContentVideoViewEmbedder() {
-        return new ActivityContentVideoViewEmbedder((Activity) mViewContext) {
-            @Override
-            public void enterFullscreenVideo(View view, boolean isVideoLoaded) {
-                super.enterFullscreenVideo(view, isVideoLoaded);
-                if (mContentViewRenderView != null) {
-                    mContentViewRenderView.setOverlayVideoMode(true);
-                }
-            }
-
-            @Override
-            public void exitFullscreenVideo() {
-                super.exitFullscreenVideo();
-                if (mContentViewRenderView != null) {
-                    mContentViewRenderView.setOverlayVideoMode(false);
-                }
-            }
-        };
-
-    }
+    //TODO(iotto): removed; checkout ActivityContentVideoViewEmbedder
+//    public ContentVideoViewEmbedder getContentVideoViewEmbedder() {
+//        return new ActivityContentVideoViewEmbedder((Activity) mViewContext) {
+//            @Override
+//            public void enterFullscreenVideo(View view, boolean isVideoLoaded) {
+//                super.enterFullscreenVideo(view, isVideoLoaded);
+//                if (mContentViewRenderView != null) {
+//                    mContentViewRenderView.setOverlayVideoMode(true);
+//                }
+//            }
+//
+//            @Override
+//            public void exitFullscreenVideo() {
+//                super.exitFullscreenVideo();
+//                if (mContentViewRenderView != null) {
+//                    mContentViewRenderView.setOverlayVideoMode(false);
+//                }
+//            }
+//        };
+//
+//    }
     
     @CalledByNative
     public int getZoneId() { 
@@ -1620,4 +1692,73 @@ class XWalkContent implements XWalkPreferences.KeyValueChangeListener {
     private native void nativeFindNext(long nativeXWalkContent, boolean forward);
 
     private native void nativeClearMatches(long nativeXWalkContent);
+    
+    // inner classes
+    private static class WebContentsInternalsHolder implements WebContents.InternalsHolder {
+        private final WeakReference<XWalkContent> mXwalkContentsRef;
+
+        private WebContentsInternalsHolder(XWalkContent xwalkContents) {
+            mXwalkContentsRef = new WeakReference<>(xwalkContents);
+        }
+
+        @Override
+        public void set(WebContentsInternals internals) {
+            XWalkContent awContents = mXwalkContentsRef.get();
+            if (awContents == null) {
+                throw new IllegalStateException("AwContents should be available at this time");
+            }
+            awContents.mWebContentsInternals = internals;
+        }
+
+        @Override
+        public WebContentsInternals get() {
+            XWalkContent awContents = mXwalkContentsRef.get();
+            return awContents == null ? null : awContents.mWebContentsInternals;
+        }
+
+        public boolean weakRefCleared() {
+            return mXwalkContentsRef.get() == null;
+        }
+    }
+    
+  //--------------------------------------------------------------------------------------------
+    // TODO(iotto): Implement or use the on in android_webview
+//    private class XWalkGestureStateListener implements GestureStateListener {
+//        @Override
+//        public void onPinchStarted() {
+//            // While it's possible to re-layout the view during a pinch gesture, the effect is very
+//            // janky (especially that the page scale update notification comes from the renderer
+//            // main thread, not from the impl thread, so it's usually out of sync with what's on
+//            // screen). It's also quite expensive to do a re-layout, so we simply postpone
+//            // re-layout for the duration of the gesture. This is compatible with what
+//            // WebViewClassic does.
+//            mLayoutSizer.freezeLayoutRequests();
+//        }
+//
+//        @Override
+//        public void onPinchEnded() {
+//            mLayoutSizer.unfreezeLayoutRequests();
+//        }
+//
+//        @Override
+//        public void onScrollUpdateGestureConsumed() {
+//            mScrollAccessibilityHelper.postViewScrolledAccessibilityEventCallback();
+//            mZoomControls.invokeZoomPicker();
+//        }
+//
+//        @Override
+//        public void onScrollStarted(int scrollOffsetY, int scrollExtentY) {
+//            mZoomControls.invokeZoomPicker();
+//        }
+//
+//        @Override
+//        public void onScaleLimitsChanged(float minPageScaleFactor, float maxPageScaleFactor) {
+//            mZoomControls.updateZoomControls();
+//        }
+//
+//        @Override
+//        public void onScrollOffsetOrExtentChanged(int scrollOffsetY, int scrollExtentY) {
+//            mZoomControls.updateZoomControls();
+//        }
+//    }
 }

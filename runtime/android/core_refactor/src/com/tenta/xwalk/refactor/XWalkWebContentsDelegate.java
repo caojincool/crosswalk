@@ -8,11 +8,13 @@ import android.view.KeyEvent;
 
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
-import org.chromium.components.web_contents_delegate_android.WebContentsDelegateAndroid;
+import org.chromium.components.embedder_support.delegate.WebContentsDelegateAndroid;
+
 
 @JNINamespace("xwalk")
 abstract class XWalkWebContentsDelegate extends WebContentsDelegateAndroid {
     @CalledByNative
+    @Override
     public boolean shouldCreateWebContents(String targetUrl) {
         return true;
     }
@@ -21,26 +23,33 @@ abstract class XWalkWebContentsDelegate extends WebContentsDelegateAndroid {
     public abstract boolean addNewContents(boolean isDialog, boolean isUserGesture);
 
     @CalledByNative
+    @Override
     public abstract void closeContents();
 
     @CalledByNative
+    @Override
     public abstract void activateContents();
 
     @CalledByNative
+    @Override
     public abstract void rendererUnresponsive();
 
     @CalledByNative
+    @Override
     public abstract void rendererResponsive();
 
     @CalledByNative
+    @Override
     public abstract void handleKeyboardEvent(KeyEvent event);
 
     @CalledByNative
+    @Override
     public abstract boolean addMessageToConsole(int level, String message,
             int lineNumber,String sourceId);
 
 
     @CalledByNative
+    @Override
     public abstract void showRepostFormWarningDialog();
 
     @CalledByNative

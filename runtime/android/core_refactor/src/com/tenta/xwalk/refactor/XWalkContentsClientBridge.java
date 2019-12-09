@@ -5,6 +5,7 @@
 
 package com.tenta.xwalk.refactor;
 
+import android.annotation.SuppressLint;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
@@ -14,7 +15,6 @@ import android.graphics.Picture;
 import android.net.Uri;
 import android.net.http.SslCertificate;
 import android.net.http.SslError;
-import android.os.AsyncTask;
 import android.os.Handler;
 import android.os.Message;
 import android.provider.MediaStore;
@@ -27,12 +27,12 @@ import android.webkit.ValueCallback;
 import android.webkit.WebResourceResponse;
 import android.widget.Toast;
 
+import org.chromium.base.task.AsyncTask;
 import org.chromium.base.ContentUriUtils;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
 import org.chromium.components.navigation_interception.InterceptNavigationDelegate;
 import org.chromium.components.navigation_interception.NavigationParams;
-import org.chromium.content.browser.ContentVideoViewEmbedder;
 
 import com.tenta.xwalk.refactor.CustomViewCallback;
 import com.tenta.xwalk.refactor.RewriteUrlValue;
@@ -80,10 +80,10 @@ class XWalkContentsClientBridge extends XWalkContentsClient {
 
     /** State recording variables */
     // For fullscreen state.
-    private boolean mIsFullscreen = false;
+    private boolean mIsFullscreen;
     // For load state.
     private LoadStatusInternal mLoadStatus = LoadStatusInternal.FINISHED;
-    private String mLoadingUrl = null;
+    private String mLoadingUrl;
 
     // The native peer of the object
     protected long mNativeContentsClientBridge;
@@ -99,6 +99,7 @@ class XWalkContentsClientBridge extends XWalkContentsClient {
             mContentsClient = client;
         }
 
+        @Override
         public boolean shouldIgnoreNavigation(NavigationParams navigationParams) {
             final String url = navigationParams.url;
             boolean ignoreNavigation = mNavigationHandler != null &&
@@ -120,7 +121,11 @@ class XWalkContentsClientBridge extends XWalkContentsClient {
         }
     }
 
+    @SuppressLint("HandlerLeak")
     public XWalkContentsClientBridge(XWalkView xwView) {
+        mIsFullscreen = false;
+        mLoadingUrl = null;
+        
         mXWalkView = xwView;
         mLookupTable = new ClientCertLookupTable();
         mInterceptNavigationDelegate = new InterceptNavigationDelegateImpl(this);
@@ -356,6 +361,7 @@ class XWalkContentsClientBridge extends XWalkContentsClient {
     }
 
     @CalledByNative
+    @Override
     public void onReceivedHttpAuthRequest(
             XWalkHttpAuthHandler handler, String host, String realm) {
         if (mXWalkResourceClient != null) {
@@ -636,7 +642,7 @@ class XWalkContentsClientBridge extends XWalkContentsClient {
      * @author iotto
      *
      */
-    private static class GetDisplayNameTask extends AsyncTask<Void, Void, String[]> {
+    private static class GetDisplayNameTask extends AsyncTask<String[]> {
         final int mProcessId;
         final int mRenderId;
         final int mModeFlags;
@@ -652,7 +658,7 @@ class XWalkContentsClientBridge extends XWalkContentsClient {
         }
 
         @Override
-        protected String[] doInBackground(Void... voids) {
+        protected String[] doInBackground() {
             String[] displayNames = new String[mFilePaths.length];
             for (int i = 0; i < mFilePaths.length; i++) {
                 displayNames[i] = resolveFileName(mFilePaths[i]);
@@ -682,8 +688,8 @@ class XWalkContentsClientBridge extends XWalkContentsClient {
     public boolean shouldOverrideRunFileChooser(final int processId, final int renderId, final int modeFlags,
             String acceptTypes, boolean capture) {
         abstract class UriCallback implements ValueCallback<String[]> {
-            boolean syncNullReceived = false;
-            boolean syncCallFinished = false;
+            boolean syncNullReceived;
+            boolean syncCallFinished;
             int processId;
             int renderId;
             int modeFlags;
@@ -694,7 +700,7 @@ class XWalkContentsClientBridge extends XWalkContentsClient {
             }
         }
         UriCallback uploadFile = new UriCallback(processId, renderId, modeFlags) {
-            boolean completed = false;
+            boolean completed;
 
             @Override
             public void onReceiveValue(String[] results) {
@@ -728,12 +734,14 @@ class XWalkContentsClientBridge extends XWalkContentsClient {
         mXWalkView.stopSwipeRefreshHandler();
     }
 
-    // TODO(iotto) see if get's called
-    @Override
-    public ContentVideoViewEmbedder getContentVideoViewEmbedder() {
-        return new XWalkContentVideoViewClient(this, mXWalkView);
-    }
+    //TODO(iotto): Removed
+//    // TODO(iotto) see if get's called
+//    @Override
+//    public ContentVideoViewEmbedder getContentVideoViewEmbedder() {
+//        return new XWalkContentVideoViewClient(this, mXWalkView);
+//    }
 
+    @Override
     public void provideClientCertificateResponse(int id, byte[][] certChain,
             PrivateKey privateKey) {
         nativeProvideClientCertificateResponse(mNativeContentsClientBridge, id, certChain,

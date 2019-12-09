@@ -63,9 +63,7 @@ import java.io.StringWriter;
 import java.lang.ref.WeakReference;
 import java.util.Map;
 
-import org.chromium.base.ApplicationStatusManager;
 import org.chromium.base.CommandLine;
-import org.chromium.content.browser.ContentViewCore;
 //TODO(iotto) : Maybe fix!
 //import org.xwalk.core.internal.extension.BuiltinXWalkExtensions;
 import org.chromium.net.NetworkChangeNotifier;
@@ -256,6 +254,7 @@ public class XWalkView extends android.widget.FrameLayout {
     private static final String TAG = XWalkView.class.getSimpleName();
 
     private XWalkContent mContent;
+//    private AwXWalkContents mContent;
     private Context mContext;
     private final XWalkHitTestResult mXWalkHitTestResult;
     private boolean mIsHidden;
@@ -1458,7 +1457,8 @@ public class XWalkView extends android.widget.FrameLayout {
      * @return the new InputConnection
      * @since 5.0
      */
-//    @XWalkAPI
+
+    @Override
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
         return mContent.onCreateInputConnection(outAttrs);
     }
@@ -1614,12 +1614,7 @@ public class XWalkView extends android.widget.FrameLayout {
      * @param visibility One of VISIBLE, INVISIBLE, or GONE.
      * @since 6.0
      */
-//    @XWalkAPI(disableReflectMethod = true, preWrapperLines = {
-//            "        if (visibility == View.INVISIBLE) visibility = View.GONE;",
-//            "        super.setVisibility(visibility);",
-//            "        setXWalkViewInternalVisibility(visibility);",
-//            "        setSurfaceViewVisibility(visibility);"
-//    })
+    @Override
     public void setVisibility(int visibility) {
         if (visibility == View.INVISIBLE)
             visibility = View.GONE;
@@ -1731,11 +1726,6 @@ public class XWalkView extends android.widget.FrameLayout {
             }
         }
         return super.dispatchKeyEvent(event);
-    }
-
-    // For instrumentation test.
-    public ContentViewCore getXWalkContentForTest() {
-        return mContent.getContentViewCoreForTest();
     }
 
     // This is used to call back to XWalkView's performLongClick() so that developer can
@@ -1866,7 +1856,7 @@ public class XWalkView extends android.widget.FrameLayout {
      * @return the range of horizontal scrollbar.
      * @since 6.0
      */
-//    @XWalkAPI
+    @Override
     public int computeHorizontalScrollRange() {
         if (mContent != null) {
             return mContent.computeHorizontalScrollRange();
@@ -1881,7 +1871,7 @@ public class XWalkView extends android.widget.FrameLayout {
      * @return the horizontal offset of the horizontal scrollbar's thumb.
      * @since 6.0
      */
-//    @XWalkAPI
+    @Override
     public int computeHorizontalScrollOffset() {
         if (mContent != null) {
             return mContent.computeHorizontalScrollOffset();
@@ -1895,7 +1885,7 @@ public class XWalkView extends android.widget.FrameLayout {
      * @return the range of the vertical scrollbar.
      * @since 6.0
      */
-//    @XWalkAPI
+    @Override
     public int computeVerticalScrollRange() {
         if (mContent != null) {
             return mContent.computeVerticalScrollRange();
@@ -1909,7 +1899,7 @@ public class XWalkView extends android.widget.FrameLayout {
      * @return the vertical offset of the vertical scrollbar's thumb.
      * @since 6.0
      */
-//    @XWalkAPI
+    @Override
     public int computeVerticalScrollOffset() {
         if (mContent != null) {
             return mContent.computeVerticalScrollOffset();
@@ -1923,7 +1913,7 @@ public class XWalkView extends android.widget.FrameLayout {
      * @return vertical offset of the vertical scrollbar's thumb.
      * @since 6.0
      */
-//    @XWalkAPI
+    @Override
     public int computeVerticalScrollExtent() {
         if (mContent != null) {
             return mContent.computeVerticalScrollExtent();

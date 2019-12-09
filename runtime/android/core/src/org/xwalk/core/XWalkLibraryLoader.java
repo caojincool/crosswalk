@@ -4,6 +4,7 @@
 
 package org.xwalk.core;
 
+import android.annotation.SuppressLint;
 import android.app.DownloadManager;
 import android.app.DownloadManager.Request;
 import android.app.DownloadManager.Query;
@@ -14,7 +15,6 @@ import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.net.Uri;
-import android.os.AsyncTask;
 import android.os.Environment;
 import android.os.SystemClock;
 import android.util.Log;
@@ -31,6 +31,8 @@ import java.net.URL;
 import java.net.MalformedURLException;
 import java.util.Arrays;
 
+import com.tenta.xwalk.refactor.XWalkAppVersion;
+
 /**
  * XWalkLibraryLoader is a low level inteface to schedule decompressing, downloading, activating
  * the Crosswalk runtime. Normal user is recommended to use XWalkActivity or XWalkInitializer which
@@ -42,7 +44,7 @@ import java.util.Arrays;
  * startActivate() -
  * [ if the Crosswalk runtime doesn't match - download suitable version - startActivate() ] - over
  */
-
+@SuppressLint("NoAndroidAsyncTaskCheck")
 class XWalkLibraryLoader {
     /**
      * Interface used to decompress the Crosswalk runtime
@@ -129,7 +131,7 @@ class XWalkLibraryLoader {
             "android.permission.DOWNLOAD_WITHOUT_NOTIFICATION";
     private static final String TAG = "XWalkLibraryLoader";
 
-    private static AsyncTask<Void, Integer, Integer> sActiveTask;
+    private static android.os.AsyncTask<Void, Integer, Integer> sActiveTask;
 
     public static boolean isInitializing() {
         return sActiveTask != null &&
@@ -261,7 +263,7 @@ class XWalkLibraryLoader {
                 && sActiveTask.cancel(true);
     }
 
-    private static class DecompressTask extends AsyncTask<Void, Integer, Integer> {
+    private static class DecompressTask extends android.os.AsyncTask<Void, Integer, Integer> {
         DecompressListener mListener;
         boolean mIsCompressed;
         boolean mIsDecompressed;
@@ -316,7 +318,7 @@ class XWalkLibraryLoader {
         }
     }
 
-    private static class ActivateTask extends AsyncTask<Void, Integer, Integer> {
+    private static class ActivateTask extends android.os.AsyncTask<Void, Integer, Integer> {
         ActivateListener mListener;
 
         ActivateTask(ActivateListener listener) {
@@ -353,7 +355,8 @@ class XWalkLibraryLoader {
         }
     }
 
-    private static class DownloadManagerTask extends AsyncTask<Void, Integer, Integer> {
+    @SuppressLint("StaticFieldLeak")
+    private static class DownloadManagerTask extends android.os.AsyncTask<Void, Integer, Integer> {
         private static final int QUERY_INTERVAL_MS = 100;
         private static final int MAX_PAUSED_COUNT = 6000; // 10 minutes
 
@@ -503,7 +506,8 @@ class XWalkLibraryLoader {
 
     // This is used only in download mode where we want to save the downloaded file to application
     // private storage and it's also intended to solve the exception found in XWALK-5951
-    private static class HttpDownloadTask extends AsyncTask<Void, Integer, Integer> {
+    @SuppressLint("StaticFieldLeak")
+    private static class HttpDownloadTask extends android.os.AsyncTask<Void, Integer, Integer> {
         private static final String XWALK_DOWNLOAD_DIR = "xwalk_download";
         private static final int UPDATE_INTERVAL_MS = 500;
         private static final int DOWNLOAD_SUCCESS = 0;
